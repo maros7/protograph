@@ -62,7 +62,8 @@ func Parse(root string, extraImportPaths ...string) (*graph.ProtoGraph, error) {
 		Resolver: &protocompile.SourceResolver{
 			ImportPaths: importPaths,
 		},
-		Reporter: reporter.NewReporter(nil, nil), // silent
+		SourceInfoMode: protocompile.SourceInfoStandard,
+		Reporter:       reporter.NewReporter(nil, nil), // silent
 	}
 
 	compiled, err := compiler.Compile(context.Background(), protoFiles...)

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/maros7/protograph/internal/graph"
 	"github.com/maros7/protograph/internal/parser"
+	"github.com/maros7/protograph/internal/projectstore"
 	"github.com/maros7/protograph/internal/search"
 )
 
@@ -49,6 +51,8 @@ func main() {
 		runDependents(args, jsonMode)
 	case "deps":
 		runDeps(args, jsonMode)
+	case "clean":
+		runClean(args, jsonMode)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -75,7 +79,6 @@ FLAGS
   --json                                 JSON output (for tool integration)`)
 }
 
-const graphFile = ".protograph/graph.json"
 
 func runBuild(args []string, jsonMode bool) {
 	root := "."
@@ -102,13 +105,14 @@ func runBuild(args []string, jsonMode bool) {
 		os.Exit(1)
 	}
 
-	// Write graph
-	os.MkdirAll(".protograph", 0o750)
+	// Write graph to global store
+	abs, _ := os.Getwd()
 	data, _ := json.MarshalIndent(pg, "", "  ")
-	if err := os.WriteFile(graphFile, data, 0o640); err != nil {
+	if err := projectstore.Write(abs, data); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing graph: %v\n", err)
 		os.Exit(1)
 	}
+	graphPath, _ := projectstore.GraphPath(abs)
 
 	if jsonMode {
 		printJSON(map[string]any{
@@ -122,12 +126,13 @@ func runBuild(args []string, jsonMode bool) {
 	} else {
 		fmt.Printf("  messages: %d  enums: %d  services: %d  files: %d  edges: %d\n",
 			len(pg.Messages), len(pg.Enums), len(pg.Services), len(pg.Files), len(pg.Edges))
-		fmt.Printf("  wrote %s\n", graphFile)
+		fmt.Printf("  wrote %s\n", graphPath)
 	}
 }
 
 func loadGraph() *graph.ProtoGraph {
-	data, err := os.ReadFile(graphFile)
+	abs, _ := os.Getwd()
+	data, err := projectstore.Read(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: run 'protograph build' first\n")
 		os.Exit(1)
@@ -296,6 +301,63 @@ func runDeps(args []string, jsonMode bool) {
 			fmt.Printf("  .%s → %s\n", e.FieldName, e.To)
 		}
 	}
+}
+
+func runClean(args []string, jsonMode bool) {
+	maxDays := 30
+	dryRun := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--days":
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil {
+					maxDays = n
+				}
+				i++
+			}
+		case "--dry-run":
+			dryRun = true
+		}
+	}
+
+	abs, _ := os.Getwd()
+	branches, err := projectstore.ListBranches(abs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(branches) == 0 {
+		fmt.Println("No branch indices found.")
+		return
+	}
+
+	var staleCount int
+	for _, b := range branches {
+		protected := ""
+		if b.Branch == "main" || b.Branch == "master" {
+			protected = " [protected]"
+		}
+		stale := ""
+		if b.AgeDays > maxDays && protected == "" {
+			stale = " ← STALE"
+			staleCount++
+		}
+		fmt.Printf("  %-40s %3d days  %6.1f MB%s%s\n",
+			b.Branch, b.AgeDays, float64(b.Size)/(1024*1024), protected, stale)
+	}
+
+	if staleCount == 0 {
+		fmt.Println("\nNothing to clean.")
+		return
+	}
+	if dryRun {
+		fmt.Printf("\nWould remove %d stale branch(es).\n", staleCount)
+		return
+	}
+
+	removed, _ := projectstore.CleanStale(abs, maxDays)
+	fmt.Printf("\nCleaned %d stale branch(es).\n", removed)
 }
 
 func printJSON(v any) {
